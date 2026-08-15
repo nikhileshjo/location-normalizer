@@ -1,0 +1,7 @@
+CREATE TABLE alias (
+    location_code INT,
+    alias TEXT,
+    CONSTRAINT location
+    FOREIGN KEY (location_code)
+    REFERENCES location_code(location_code)
+)
