@@ -151,7 +151,7 @@ class Housekeeping():
                             hash_digest = hashlib.file_digest(f, "sha256")
                         raw_hashes[file] = hash_digest.hexdigest() # will hold file hash
                 with engine.connect() as conn:
-                    hash_vals = conn.execute(text("SELECT file_name, hash_value FROM csv_hash"))
+                    hash_vals = conn.execute(text("SELECT file_name, hash_value FROM csv_hash")).all()
                 if len(hash_vals) < 2:
                     self._create_db()
                     return None
@@ -165,8 +165,34 @@ class Housekeeping():
         else:
             self._create_db()
 
-    def shallow_sync_check(self):
-        pass
+    def shallow_sync_check(self) -> bool:
+        """
+            This function will perform a sync check by matching hash stored in the database and the hash of the files
+            Assumtion: This function assumes that all files exists, so it will break if a file doesn't exist
+                Input: No inputs required
+                Output: Boolean, True when in Sync and False otherwise
+        """
+        engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
+        raw_hashes = {}
+        db_hashes = {}
+        for file in PROPERTIES["DDL_ORDER"]:
+            csv_file = os.path.join(CSV_LOCATION, f"{file}.csv")
+            if not os.path.isfile(csv_file):
+                raise FileNotFoundError(f"File not found:{csv_file}")
+            else:
+                with open(csv_file, "rb") as f:
+                    hash_digest = hashlib.file_digest(f, "sha256")
+                raw_hashes[file] = hash_digest.hexdigest() # will hold file hash
+        with engine.connect() as conn:
+            hash_vals = conn.execute(text("SELECT file_name, hash_value FROM csv_hash")).all()
+            if len(hash_vals) < 2:
+                return False
+            for file, hash in hash_vals:
+                db_hashes[file] = hash
+            if db_hashes != raw_hashes:
+                return False
+            else:
+                return True
 
     def deep_sync_check(self):
         pass
