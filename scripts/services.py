@@ -2,27 +2,43 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ResourceClosedError
 import pandas as pd
+import hashlib
 
 from dotenv import load_dotenv
 
 load_dotenv()
-LOCATION_CSV = os.getenv("LOCATION_CSV")
-ALIAS_CSV = os.getenv("ALIAS_CSV")
+CSV_LOCATION = os.getenv("CSV_LOCATION")
+SCHEMA_LOCATION = os.getenv("SCHEMA_LOCATION")
 DB_LOCATION = os.getenv("DB_LOCATION")
+PROPERTY_FILE_LOCATION = os.getenv("PROPERTY_FILE_LOCATION")
+
+PROPERTIES = {}
+with open(PROPERTY_FILE_LOCATION, "r") as prop_file:
+    for line in prop_file:
+        key, value = line.split("=")
+        if key == "DDL_ORDER":
+            PROPERTIES[key] = [val.strip() for val in value.split(",")]
+        else:
+            PROPERTIES[key] = value
+                        
 
 class Housekeeping():
-    def _query_exec(self, query:str) -> list[tuple]:
+    def _query_exec(self, query:str, data: list[dict] = None) -> list[tuple]:
         """
             This is a helper function that executes a query and returns the result
-                Input: requeries 1 input string
+                Input: requeries 1 input string, optional data list incase you're query has some had hard coded values
                 Output: List of tuples, where each tuple represents a row
         """
         try:
             if os.path.isfile(DB_LOCATION):
                 engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
                 with engine.connect() as conn:
-                    result = conn.execute(text(query))
-                return result.all()
+                    if data!=None:
+                        result = conn.execute(text(query), data)
+                        return []
+                    else:
+                        result = conn.execute(text(query))
+                        return result.all()
             else:
                 raise FileNotFoundError(f"{DB_LOCATION} not found")
         except ResourceClosedError:
@@ -30,7 +46,29 @@ class Housekeeping():
         except:
             raise
         
-    
+
+    def _file2sqlalchemy(self, file_path: str) -> tuple[list ,list[dict]]:
+        """
+            This is a helper function that will take any pandas dataframe and convert it
+            to sqlalchemy consumable data
+                Input: file path as string
+                Output: List containing dictionary where each dictionary is a row
+                    and each dictionary is a KV pair of column: value of the column in that row
+        """ 
+        with open(file_path, "r") as f:
+            header = f.readline()
+            columns = [col.strip() for col in header.split(",")]
+
+            data_list = []
+            for rows in f:
+                tmp_dict = {}
+                row_vals = [val.strip() for val in rows.split(",")]
+                for col, val in zip(columns, row_vals):
+                    tmp_dict[col] = val
+                data_list.append(tmp_dict)
+
+        return (columns, data_list)
+
     def _create_db(self) -> None:
         """
             This is a helper function that creates the db from the csv file
@@ -43,15 +81,51 @@ class Housekeeping():
             os.remove(DB_LOCATION)
         try:
             db_dir_folders = DB_LOCATION.split("/")[:-1]
-            db_dir = os.path.join("/".join(db_dir_folders))
+            db_dir = "/".join(db_dir_folders)
             os.makedirs(db_dir, exist_ok=True)
+            
+            # create database
             engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
+            # with engine.connect() as conn:
+            #     conn.execute(text("select 'hello world'"))
+
+
+            for table in PROPERTIES["DDL_ORDER"]:
+                # table = table1, table2, table3....
+                # create schema
+                with open(os.path.join(SCHEMA_LOCATION, f"{table}.sql")) as ddl:
+                    with engine.connect() as conn:
+                        conn.execute(text(ddl.read()))
+                        conn.commit()
+                    # self._query_exec(ddl.read())
+                # load table
+                columns, data = self._file2sqlalchemy(os.path.join(CSV_LOCATION, f"{table}.csv"))
+                if len(data) > 0:
+                    table_columns = ",".join(columns)
+                    table_columns_val_args = ",".join([ f":{col}" for col in columns ])
+                    with engine.connect() as conn:
+                        conn.execute(text(f"INSERT INTO {table} ({table_columns}) VALUES ({table_columns_val_args})"), data)
+                        conn.commit()
+                    # self._query_exec(f"INSERT INTO {table} ({table_columns}) VALUES ({table_columns_val_args})", data)
+            # store hash in database
+            hash_table_ddl = open(os.path.join(SCHEMA_LOCATION, f"{PROPERTIES["HASH_DDL"]}.sql"), "r").read()
             with engine.connect() as conn:
-                with open("scripts/schema/ddl_order.txt", "r") as order_file:
-                    for table in order_file:
-                        # table = table_1.sql\n, table_2.sql\n, table_3.sql\n...
-                        with open(f"scripts/schema/{table.strip()}") as sql_ddl:
-                            self._query_exec(sql_ddl.read())
+                conn.execute(text(hash_table_ddl))
+                conn.commit()
+            # self._query_exec(hash_table_ddl)
+            hash_data = []
+            for file in PROPERTIES["DDL_ORDER"]:
+                tmp_dict = {}
+                with open(os.path.join(CSV_LOCATION, f"{file}.csv"), "rb") as f:
+                    hash_digest = hashlib.file_digest(f, "sha256")
+                file_hash = hash_digest.hexdigest() # will hold file hash
+                tmp_dict["file_name"] = file
+                tmp_dict["hash_value"] = file_hash
+                hash_data.append(tmp_dict)
+            with engine.connect() as conn:
+                conn.execute(text(f"INSERT INTO {PROPERTIES["HASH_DDL"]} (file_name, hash_value) VALUES (:file_name, :hash_value)"), hash_data)
+                conn.commit()
+            # self._query_exec(f"INSERT INTO {PROPERTIES["HASH_DDL"]} (file_name, hash_value) VALUES (:file_name, :hash_value)", hash_data)
         except PermissionError:
             raise
         except:
@@ -64,33 +138,32 @@ class Housekeeping():
             Output: None
         """
         if os.path.isfile(DB_LOCATION):
-            if not os.path.isfile(ALIAS_CSV):
-                raise FileNotFoundError(f"{ALIAS_CSV} file not found")
-            elif not os.path.isfile(LOCATION_CSV):
-                raise FileNotFoundError(f"{LOCATION_CSV} file not found")
-            else:
-                try:
-                    hash_val = {}
-                    hashes = self.__query_exec("SELECT file_name, hash_value FROM csv_hash")
-                    for file_name, hash_value in hashes:
-                        hash_val[file_name] = hash_value
-                except:
-                    # delete existing db file and recreate the DB from the available CSV
-                    os.remove(DB_LOCATION)
-                    engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
-
-                    with engine.connect() as conn:
-                        location_hash = conn.execute(text(f"SELECT hash_value FROM csv_hash WHERE file_name = 'location'")).all()[0][0]
-                        location_hash = conn.execute(text(f"SELECT hash_value FROM csv_hash WHERE file_name = 'alias'")).all()[0][0]
-                    pass
-                # if location_db_hash == location_file_hash and alias_db_hash == alias_file_hash:
-                #     return None
-                # else:
-
-            pass
+            raw_hashes = {}
+            db_hashes = {}
+            try:
+                engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
+                for file in PROPERTIES["DDL_ORDER"]:
+                    csv_file = os.path.join(CSV_LOCATION, f"{file}.csv")
+                    if not os.path.isfile(csv_file):
+                        raise FileNotFoundError(f"File not found:{csv_file}")
+                    else:
+                        with open(csv_file, "rb") as f:
+                            hash_digest = hashlib.file_digest(f, "sha256")
+                        raw_hashes[file] = hash_digest.hexdigest() # will hold file hash
+                with engine.connect() as conn:
+                    hash_vals = conn.execute(text("SELECT file_name, hash_value FROM csv_hash"))
+                if len(hash_vals) < 2:
+                    self._create_db()
+                    return None
+                for file, hash in hash_vals:
+                    db_hashes[file] = hash
+                if db_hashes != raw_hashes:
+                    self._create_db()
+            except:
+                self._create_db()
+                return None         
         else:
-            pass
-        pass
+            self._create_db()
 
     def shallow_sync_check(self):
         pass
