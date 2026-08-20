@@ -243,10 +243,50 @@ class Housekeeping():
         return is_synced==1
 
     def csv_to_db_sync(self):
-        pass
+        """
+            This will make a copy of existing database (if any).
+            Then create a new database from the csv
+                Input: no inputs required
+                Output: None
+        """
+        if os.path.isfile(DB_LOCATION):
+            os.rename(DB_LOCATION, f"{DB_LOCATION}_copy")
+        self._create_db()
 
     def db_to_csv_sync(self, confirm=False):
-        pass
+        """
+            This will make a copy of existing CSV (if any).
+            Then create a new CSV from the database
+            CAUTION: THIS MEANS YOU MAKE THE DATABASE AS SOURCE OF TRUTH
+                Input: optionl boolean input, where passing True means the function will execute
+                    False (default) means it won't.
+                Output: None
+        """
+        if not confirm:
+            return None
+        engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
+        for table in PROPERTIES["DDL_ORDER"]:
+            csv_file = os.path.join(CSV_LOCATION, f"{table}.csv")
+            if os.path.isfile(csv_file):
+                os.rename(csv_file, f"{csv_file}_copy")
+            columns = [] # will hold column names
+            with engine.connect() as conn:
+                cursor = conn.execute(text(f"SELECT * FROM {table}"))
+                conn.commit()
+            columns = tuple(cursor.keys())
+            output = cursor.all()
+            df_dict = {}
+            for row in output:
+                # row = (val1, val2, val3...), (val4, val5, val6...)...
+                for col, val in zip(columns, row):
+                    if col in df_dict:
+                        df_dict[col].append(val)
+                    else:
+                        df_dict[col] = [val]
+
+            df = pd.DataFrame(df_dict)
+            df.to_csv(csv_file, header=True, index=False)
+            
 
 class LocationService():
     def get_location(self, alias):
