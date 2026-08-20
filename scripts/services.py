@@ -194,8 +194,53 @@ class Housekeeping():
             else:
                 return True
 
-    def deep_sync_check(self):
-        pass
+    def deep_sync_check(self) -> bool:
+        """
+            This function will create a temperory table in the data base
+            and perform a row wise check against the original tables.
+            CAUTION: THIS IS AN EXPENSIVE CHECK
+                Input: No input required
+                Output: Boolean
+        """
+        engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
+        for table in PROPERTIES["DDL_ORDER"]:
+            # table = table1, table2...
+            create_query = f"""CREATE TEMP TABLE temp_{table} AS
+                        SELECT * FROM {table}
+                        WHERE 0"""
+            # load table
+            columns, data = self._file2sqlalchemy(os.path.join(CSV_LOCATION, f"{table}.csv"))
+            if len(data) > 0:
+                table_columns = ",".join(columns)
+                table_columns_val_args = ",".join([ f":{col}" for col in columns ])
+            insert_query = f"INSERT INTO temp_{table} ({table_columns}) VALUES ({table_columns_val_args})"
+            join_condition = " AND ".join([f"temp_{table}.{col}={table}.{col}" for col in columns])
+            compare_query = f"""SELECT
+                                    t1.join_count=t2.table_count
+                                FROM
+                                    (
+                                        SELECT
+                                            COUNT(*) AS join_count
+                                        FROM
+                                            temp_{table}
+                                            INNER JOIN {table} ON ({join_condition})
+                                    ) t1,
+                                    (
+                                        SELECT
+                                            COUNT(*) AS table_count
+                                        FROM
+                                            {table}
+                                    ) t2"""
+            with engine.connect() as conn:
+                conn.execute(text(create_query))
+                conn.execute(text(insert_query), data)
+                is_synced = conn.execute(text(compare_query)).all()[0][0]
+                conn.commit()
+
+            if is_synced != 1:
+                return is_synced==1
+
+        return is_synced==1
 
     def csv_to_db_sync(self):
         pass
