@@ -289,8 +289,22 @@ class Housekeeping():
             
 
 class LocationService():
-    def get_location(self, alias):
-        pass
+    def get_location(self, alias: str) -> tuple[str]:
+        """
+            This function takes a name and returns a tuple of normalized location
+            The output is in this format: (country,state,city)
+                Input: place name (string)
+                Output: tuple of strings (country,state,city)
+        """
+        engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
+        with engine.connect() as conn:
+            query = "SELECT country, state, city FROM location l INNER JOIN alias a ON (a.location_code = l.location_code) WHERE a.alias = :alias"
+            result = conn.execute(text(query), [{"alias" : alias}]).all()
+        if len(result) < 1:
+            return ()
+        else:
+            return result[0]
+
 
     def set_alias(self, alias:str, loc_dict:dict):
         pass
