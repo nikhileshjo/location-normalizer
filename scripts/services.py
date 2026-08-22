@@ -3,6 +3,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import ResourceClosedError
 import pandas as pd
 import hashlib
+from fuzzywuzzy import fuzz
 
 from dotenv import load_dotenv
 
@@ -296,12 +297,38 @@ class LocationService():
                 Input: place name (string)
                 Output: tuple of strings (country,state,city)
         """
+        alias = alias.lower()
         engine = create_engine(f"sqlite+pysqlite:///{DB_LOCATION}")
         with engine.connect() as conn:
-            query = "SELECT country, state, city FROM location l INNER JOIN alias a ON (a.location_code = l.location_code) WHERE a.alias = :alias"
+            query = "SELECT country, state, city FROM location l INNER JOIN alias a ON (a.location_code = l.location_code) WHERE LOWER(a.alias) = :alias"
             result = conn.execute(text(query), [{"alias" : alias}]).all()
         if len(result) < 1:
-            return ()
+            filter_dict = {}
+            conditions = []
+            for ind in range(len(alias)):
+                filter_dict[f"alias_{ind}"] = f"{alias[: ind + 1]}%"
+                conditions.append(f"a.alias LIKE :alias_{ind}")
+            conditions_str = " OR ".join(conditions)
+            query = f"SELECT a.alias FROM alias a WHERE {conditions_str}"
+            with engine.connect() as conn:
+                candidate_alias = conn.execute(text(query), [filter_dict]).all()
+            if len(candidate_alias) < 1:
+                return ()
+
+            max_ratio = 0
+            match_candidate = None
+            for candidate in candidate_alias:
+                tmp_ratio = fuzz.ratio(alias, candidate[0])
+                if tmp_ratio > max_ratio:
+                    max_ratio = tmp_ratio
+                    match_candidate = candidate[0].lower()
+            if max_ratio == 0:
+                return ()
+            else:
+                with engine.connect() as conn:
+                    query = "SELECT country, state, city FROM location l INNER JOIN alias a ON (a.location_code = l.location_code) WHERE LOWER(a.alias) = :alias"
+                    result = conn.execute(text(query), [{"alias" : match_candidate}]).all()
+                return result
         else:
             return result[0]
 
